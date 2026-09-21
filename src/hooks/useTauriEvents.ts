@@ -48,7 +48,7 @@ function safeUnlisten(unlisten: Unlisten) {
   }
 }
 
-export function useTauriEvents() {
+export function useTauriEvents({ refreshHistory = true } = {}) {
   const { t } = useTranslation()
   const {
     setAudioVolume,
@@ -66,7 +66,7 @@ export function useTauriEvents() {
     setHistory,
     applyPersistedConfigPatch,
     setHotkeyRegistrationError,
-  } = useAppStore()
+  } = useAppStore.getState()
 
   useEffect(() => {
     let cancelled = false
@@ -91,9 +91,19 @@ export function useTauriEvents() {
     addListener<string>('stt:partial', setPartialTranscript)
     addListener<string>('stt:final', setFinalTranscript)
     addListener<string>('llm:chunk', appendPolishedChunk)
+    addListener<void>('history:changed', () => {
+      if (refreshHistory)
+        void getHistory(200, 0)
+          .then(setHistory)
+          .catch(() => {})
+    })
+    addListener<string>('pipeline:copy_preview', (text) =>
+      useAppStore.getState().setCopyPreview(text),
+    )
     addListener<PipelineState>('pipeline:state', (state) => {
       setPipelineState(state)
       if (state === 'preparing' || state === 'recording' || state === 'ask_recording') {
+        useAppStore.getState().setCopyPreview(null)
         const config = useAppStore.getState().config
         managedRunActive =
           config.stt_provider === 'cloud' ||
@@ -111,11 +121,12 @@ export function useTauriEvents() {
         // Don't clear pipelineError here — CapsuleError auto-resets after 2.5s.
         // Clearing here would swallow errors from failed start() calls that
         // transition Recording → Idle in rapid succession.
-        getHistory(200, 0)
-          .then(setHistory)
-          .catch((err) => {
-            console.error('Failed to refresh history:', err)
-          })
+        if (refreshHistory)
+          getHistory(200, 0)
+            .then(setHistory)
+            .catch((err) => {
+              console.error('Failed to refresh history:', err)
+            })
         if (managedRunActive && useAuthStore.getState().user) {
           // The managed request has already completed, so this read cannot add
           // stop-to-output latency and Neon is already awake from real usage.
@@ -196,6 +207,7 @@ export function useTauriEvents() {
       unlisteners.forEach(safeUnlisten)
     }
   }, [
+    refreshHistory,
     setAudioVolume,
     setPartialTranscript,
     setFinalTranscript,

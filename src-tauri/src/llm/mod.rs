@@ -1,5 +1,6 @@
 pub mod cloud;
 pub mod context_policy;
+pub mod doubao;
 pub mod model_capabilities;
 pub mod openai;
 pub mod prompt;
@@ -115,6 +116,7 @@ pub fn create_provider(
     client: Option<reqwest::Client>,
 ) -> Box<dyn LlmProvider> {
     match (provider_name, client) {
+        ("doubao", client) => Box::new(doubao::DoubaoProvider::new(client.unwrap_or_default())),
         ("cloud", Some(c)) => Box::new(cloud::CloudLlmProvider::with_client(c)),
         ("cloud", None) => Box::new(cloud::CloudLlmProvider::new()),
         (_, Some(c)) => Box::new(openai::OpenAiProvider::with_client(c)),

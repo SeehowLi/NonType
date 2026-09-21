@@ -4,7 +4,14 @@ import { useTranslation } from 'react-i18next'
 import { Search, Copy, Trash2, MoreHorizontal } from 'lucide-react'
 import { spring } from '../../lib/animations'
 import { useAppStore, type HistoryEntry } from '../../stores/appStore'
-import { addCorrectionRule, clearHistory, getCorrectionRules } from '../../lib/tauri'
+import {
+  addCorrectionRule,
+  clearHistory,
+  getCorrectionRules,
+  getHistory,
+  deleteHistoryEntries,
+} from '../../lib/tauri'
+import { HistoryRetention } from './HistoryRetention'
 import { toast } from '../toast-service'
 import { AppContextMeta } from './AppContextMeta'
 import { CreateCorrectionDialog } from './CreateCorrectionDialog'
@@ -19,6 +26,49 @@ export function History() {
   const [menuEntryId, setMenuEntryId] = useState<number | null>(null)
   const [correctionEntry, setCorrectionEntry] = useState<HistoryEntry | null>(null)
   const [confirmingClear, setConfirmingClear] = useState(false)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [deleting, setDeleting] = useState<number[] | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [offset, setOffset] = useState(0)
+  const [pageEntries, setPageEntries] = useState<HistoryEntry[] | null>(null)
+  const [pageBusy, setPageBusy] = useState(false)
+  const shown = pageEntries ?? history
+  useEffect(() => {
+    setOffset(0)
+    setPageEntries(null)
+    setSelected(new Set())
+  }, [history])
+  const resetPage = () => {
+    setOffset(0)
+    setPageEntries(null)
+    setSelected(new Set())
+  }
+  async function loadPage(next: number) {
+    setPageBusy(true)
+    try {
+      setPageEntries(await getHistory(200, next))
+      setOffset(next)
+      setSelected(new Set())
+    } catch {
+      toast.error('读取历史失败，请重试。')
+    } finally {
+      setPageBusy(false)
+    }
+  }
+  async function deleteSelected() {
+    if (!deleting) return
+    setDeleteBusy(true)
+    try {
+      await deleteHistoryEntries(deleting)
+      setHistory(await getHistory(200, 0))
+      resetPage()
+      setDeleting(null)
+    } catch {
+      toast.error('删除失败，请重试。')
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
   const menuTriggerEntryId = useRef<number | null>(null)
 
   const closeEntryMenu = useCallback(() => {
@@ -44,14 +94,14 @@ export function History() {
   const filtered = useMemo(
     () =>
       search
-        ? history.filter(
+        ? shown.filter(
             (h) =>
               h.polished_text.includes(search) ||
               h.raw_text.includes(search) ||
               h.context_label.includes(search),
           )
-        : history,
-    [history, search],
+        : shown,
+    [shown, search],
   )
 
   const handleCopy = (id: number, text: string) => {
@@ -70,6 +120,7 @@ export function History() {
     try {
       await clearHistory()
       setHistory([])
+      resetPage()
       setConfirmingClear(false)
     } catch (e) {
       console.error('Failed to clear history:', e)
@@ -125,6 +176,46 @@ export function History() {
         <h2 className="text-[15px] font-medium">{t('history.title')}</h2>
       </div>
 
+      <HistoryRetention onChanged={resetPage} />
+      <div className="px-5 py-2 flex items-center justify-between text-xs gap-3">
+        <label className="flex gap-2 items-center">
+          <input
+            type="checkbox"
+            aria-label="选择当前页全部记录"
+            checked={filtered.length > 0 && filtered.every((e) => selected.has(e.id))}
+            onChange={(e) =>
+              setSelected(e.target.checked ? new Set(filtered.map((entry) => entry.id)) : new Set())
+            }
+          />
+          选择当前页
+        </label>
+        <button
+          type="button"
+          disabled={selected.size === 0 || deleteBusy}
+          onClick={() => setDeleting([...selected])}
+          className="text-error disabled:opacity-40"
+        >
+          删除所选（{selected.size}）
+        </button>
+      </div>
+      {deleting && (
+        <div
+          role="dialog"
+          aria-label="确认删除历史记录"
+          className="mx-5 mb-2 p-3 rounded-lg border border-error/30 bg-error/10 text-sm"
+        >
+          <p>永久删除这 {deleting.length} 条历史记录？此操作无法撤销。</p>
+          <div className="mt-3 flex gap-4">
+            <button type="button" disabled={deleteBusy} onClick={() => void deleteSelected()}>
+              确认删除
+            </button>
+            <button type="button" disabled={deleteBusy} onClick={() => setDeleting(null)}>
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Search — jelly focus */}
       <div className="px-5 py-3">
         <div className="relative">
@@ -171,6 +262,20 @@ export function History() {
                       transition={spring.jellyGentle}
                       className="group flex items-start gap-3 px-3 py-2.5 rounded-[10px] hover:bg-bg-secondary transition-colors"
                     >
+                      <input
+                        type="checkbox"
+                        aria-label={`选择记录 ${entry.id}`}
+                        checked={selected.has(entry.id)}
+                        onChange={(e) =>
+                          setSelected((previous) => {
+                            const next = new Set(previous)
+                            if (e.target.checked) next.add(entry.id)
+                            else next.delete(entry.id)
+                            return next
+                          })
+                        }
+                        className="mt-1.5"
+                      />
                       <div className="flex-1 min-w-0">
                         <p className="text-[13px] text-text-primary leading-relaxed">
                           {entry.polished_text}
@@ -191,6 +296,14 @@ export function History() {
                         )}
                       </div>
                       <div className="flex flex-shrink-0 items-center">
+                        <button
+                          type="button"
+                          aria-label={`删除记录 ${entry.id}`}
+                          onClick={() => setDeleting([entry.id])}
+                          className="p-1.5 text-text-tertiary hover:text-error"
+                        >
+                          <Trash2 size={13} />
+                        </button>
                         <motion.button
                           onClick={() => handleCopy(entry.id, entry.polished_text)}
                           whileTap={{ scaleX: 1.1, scaleY: 0.9 }}
@@ -252,6 +365,23 @@ export function History() {
         )}
       </div>
 
+      <div className="px-5 py-2 flex justify-between text-xs border-t border-border">
+        <button
+          type="button"
+          disabled={offset === 0 || pageBusy}
+          onClick={() => void loadPage(Math.max(0, offset - 200))}
+        >
+          上一页
+        </button>
+        <span>第 {Math.floor(offset / 200) + 1} 页 · 每页最多200条</span>
+        <button
+          type="button"
+          disabled={shown.length < 200 || pageBusy}
+          onClick={() => void loadPage(offset + 200)}
+        >
+          下一页
+        </button>
+      </div>
       {/* Clear button — jelly */}
       {history.length > 0 && (
         <div className="space-y-2 border-t border-border px-5 py-3">

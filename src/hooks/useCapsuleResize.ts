@@ -68,6 +68,7 @@ function getSizeForState(
 }
 
 export function useCapsuleResize() {
+  const copyPreview = useAppStore((s) => s.copyPreview)
   const pipelineState = useAppStore((s) => s.pipelineState)
   const capsuleExpanded = useAppStore((s) => s.capsuleExpanded)
   const pipelineError = useAppStore((s) => s.pipelineError)
@@ -81,23 +82,28 @@ export function useCapsuleResize() {
   const hasError = pipelineError !== null
 
   useEffect(() => {
-    const size = getSizeForState(
-      pipelineState,
-      capsuleExpanded,
-      hasError,
-      contextMenuOpen,
-      translationTargetMenuOpen,
-    )
+    const size =
+      copyPreview !== null
+        ? { width: 320, height: 180 }
+        : getSizeForState(
+            pipelineState,
+            capsuleExpanded,
+            hasError,
+            contextMenuOpen,
+            translationTargetMenuOpen,
+          )
     const windowWidth = size.width + 24
     const windowHeight = size.height + 24
-    const shouldShow = getCapsuleVisibility({
-      capsuleAutoHide,
-      contextMenuOpen,
-      translationTargetMenuOpen,
-      capsuleExpanded,
-      hasError,
-      pipelineState,
-    })
+    const shouldShow =
+      copyPreview !== null ||
+      getCapsuleVisibility({
+        capsuleAutoHide,
+        contextMenuOpen,
+        translationTargetMenuOpen,
+        capsuleExpanded,
+        hasError,
+        pipelineState,
+      })
 
     import('@tauri-apps/api/window')
       .then(async ({ getCurrentWindow, LogicalSize, LogicalPosition, currentMonitor }) => {
@@ -166,6 +172,7 @@ export function useCapsuleResize() {
       })
       .catch(() => {})
   }, [
+    copyPreview,
     pipelineState,
     capsuleExpanded,
     hasError,

@@ -10,6 +10,7 @@ mod linux_x11;
 pub mod llm;
 pub mod native_hotkey;
 pub mod output;
+pub mod personalization;
 pub mod pipeline;
 pub mod platform;
 pub mod recording_deadline;
@@ -79,6 +80,7 @@ pub struct HotkeyRegistrationError(pub Arc<Mutex<Option<String>>>);
 /// The main renderer may restore it for authenticated API calls; native STT/LLM reads it directly.
 pub struct SessionTokenStore(pub Arc<Mutex<String>>);
 
+#[cfg(test)]
 fn with_restored_session_token<R, V>(builder: tauri::Builder<R>, vault: &V) -> tauri::Builder<R>
 where
     R: tauri::Runtime,
@@ -217,7 +219,7 @@ fn build_ask_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWi
         "ask",
         tauri::WebviewUrl::App("index.html#ask".into()),
     )
-    .title("OpenTypeless Ask")
+    .title("NonType Ask")
     .inner_size(400.0, 220.0)
     .min_inner_size(360.0, 180.0)
     .resizable(false)
@@ -526,6 +528,19 @@ struct WindowState {
     y: i32,
     width: u32,
     height: u32,
+}
+
+#[tauri::command]
+async fn wait_for_desktop(app: tauri::AppHandle) -> Result<(), String> {
+    for _ in 0..500 {
+        if app.try_state::<HotkeyRegistrationError>().is_some()
+            && app.try_state::<storage::ConfigManager>().is_some()
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    Err("Desktop initialization timed out".to_string())
 }
 
 #[tauri::command]
@@ -875,10 +890,8 @@ pub fn run() {
 
     // Builder-managed state exists before Tauri creates configured webviews.
     // Registering this in `.setup(...)` races the main renderer's first invoke on WebView2.
-    let builder = with_restored_session_token(
-        tauri::Builder::default(),
-        &credentials::SystemCredentialVault,
-    );
+    let builder =
+        tauri::Builder::default().manage(SessionTokenStore(Arc::new(Mutex::new(String::new()))));
 
     builder
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -952,6 +965,28 @@ pub fn run() {
             sync_auto_start_preference(&app_handle, &config_manager, &mut initial_config);
             app.manage(config_manager);
             app.manage(history_store);
+            let retention_app = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    let config = retention_app.state::<storage::ConfigManager>();
+                    if let Ok(config) = config.load().await {
+                        if config.history_retention_days > 0 {
+                            let history = retention_app.state::<storage::HistoryStore>();
+                            if history
+                                .prune_with_policy(
+                                    &config.history_retention_policy(),
+                                    &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+                                )
+                                .await
+                                .is_ok()
+                            {
+                                let _ = retention_app.emit("history:changed", ());
+                            }
+                        }
+                    }
+                }
+            });
             app.manage(dictionary_store);
             app.manage(app_mapping_store);
             app.manage(shared_client);
@@ -1006,7 +1041,7 @@ pub fn run() {
                         .clone(),
                 )
                 .menu(&tray_menu)
-                .tooltip("OpenTypeless")
+                .tooltip("NonType")
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "quit" => {
                         app.exit(0);
@@ -1210,6 +1245,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            wait_for_desktop,
             start_recording,
             stop_recording,
             abort_recording,
@@ -1252,6 +1288,7 @@ pub fn run() {
             commands::llm::fetch_llm_models,
             commands::history::get_history,
             commands::history::clear_history,
+            commands::history::delete_history_entries,
             commands::backup::restore_backup_data,
             commands::dictionary::get_dictionary,
             commands::dictionary::add_dictionary_entry,

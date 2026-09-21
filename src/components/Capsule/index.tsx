@@ -10,6 +10,7 @@ import { CapsuleRecording } from './CapsuleRecording'
 import { CapsuleProcessing } from './CapsuleProcessing'
 import { CapsulePolishing } from './CapsulePolishing'
 import { CapsuleComplete } from './CapsuleComplete'
+import { CapsuleCopyPreview } from './CapsuleCopyPreview'
 import { CapsuleError } from './CapsuleError'
 import { CapsuleContextMenu } from './CapsuleContextMenu'
 import { CapsuleAskRecording } from './CapsuleAskRecording'
@@ -27,6 +28,8 @@ function getCapsuleShellSize(capsuleState: string) {
   switch (capsuleState) {
     case 'idle':
       return { width: 36, height: 36 }
+    case 'copy_preview':
+      return { width: 320, height: 180 }
     case 'preparing':
       return { width: 180, height: 36 }
     case 'outputting':
@@ -45,6 +48,7 @@ function getCapsuleShellSize(capsuleState: string) {
 }
 
 export function Capsule() {
+  const copyPreview = useAppStore((s) => s.copyPreview)
   const pipelineState = useAppStore((s) => s.pipelineState)
   const pipelineError = useAppStore((s) => s.pipelineError)
   const contextMenuOpen = useAppStore((s) => s.contextMenuOpen)
@@ -61,7 +65,8 @@ export function Capsule() {
   useCapsuleResize()
 
   const hasError = pipelineError !== null
-  const capsuleState = getCapsuleState(pipelineState, hasError)
+  const capsuleState =
+    copyPreview !== null ? 'copy_preview' : getCapsuleState(pipelineState, hasError)
   const capsuleShellSize = getCapsuleShellSize(capsuleState)
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
@@ -140,14 +145,14 @@ export function Capsule() {
       <motion.div
         layout
         transition={{ layout: { duration: 0.2, ease: [0.2, 0, 0, 1] } }}
-        className={`absolute left-3 rounded-full pointer-events-auto shrink-0 ${
+        className={`absolute left-3 ${copyPreview !== null ? 'rounded-2xl' : 'rounded-full'} pointer-events-auto shrink-0 ${
           capsuleState === 'error'
             ? 'jelly-capsule-error'
             : capsuleState === 'idle'
               ? 'jelly-capsule text-neutral-700'
               : 'jelly-capsule-active text-white'
         }`}
-        style={capsuleShellSize}
+        style={{ ...capsuleShellSize, ...(copyPreview !== null ? { borderRadius: 16 } : {}) }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -162,6 +167,9 @@ export function Capsule() {
             transition={{ duration: 0.12, ease: [0.2, 0, 0, 1] }}
           >
             {capsuleState === 'idle' && <CapsuleIdle />}
+            {capsuleState === 'copy_preview' && copyPreview !== null && (
+              <CapsuleCopyPreview key={copyPreview} text={copyPreview} />
+            )}
             {capsuleState === 'preparing' && <CapsulePreparing />}
             {capsuleState === 'recording' && <CapsuleRecording />}
             {capsuleState === 'transcribing' && <CapsuleProcessing />}

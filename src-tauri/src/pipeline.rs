@@ -707,6 +707,7 @@ pub struct PipelineHandle {
     active_stt_session_id: Arc<AtomicU64>,
     active_deadline_session_id: Arc<AtomicU64>,
     abort_flag: Arc<AtomicBool>,
+    cancel_notify: Arc<Notify>,
     preloaded_config: Arc<Mutex<Option<storage::AppConfig>>>,
     preloaded_app_ctx: Arc<Mutex<Option<RecordingContext>>>,
     preloaded_dictionary: Arc<Mutex<Option<Vec<String>>>>,
@@ -917,6 +918,7 @@ impl PipelineHandle {
             active_stt_session_id: Arc::new(AtomicU64::new(0)),
             active_deadline_session_id: Arc::new(AtomicU64::new(0)),
             abort_flag: Arc::new(AtomicBool::new(false)),
+            cancel_notify: Arc::new(Notify::new()),
             preloaded_config: Arc::new(Mutex::new(None)),
             preloaded_app_ctx: Arc::new(Mutex::new(None)),
             preloaded_dictionary: Arc::new(Mutex::new(None)),
@@ -997,6 +999,7 @@ impl PipelineHandle {
 
         // Set abort flag so any running stop() exits early
         self.abort_flag.store(true, Ordering::SeqCst);
+        self.cancel_notify.notify_waiters();
         self.active_stt_session_id.fetch_add(1, Ordering::SeqCst);
         self.active_deadline_session_id.store(0, Ordering::SeqCst);
 
@@ -1115,6 +1118,7 @@ impl PipelineHandle {
         );
         let dictionary_store = self.app_handle.state::<storage::DictionaryStore>();
         let dict_words = dictionary_store.words().await;
+        let active_hotwords = crate::personalization::hotwords(&dict_words);
         let correction_rules = dictionary_store
             .enabled_correction_rules()
             .await
@@ -1309,6 +1313,7 @@ impl PipelineHandle {
                 return Ok(());
             }
         };
+        provider.set_hotwords(active_hotwords);
         // Start the platform audio backend before connecting STT. Both readiness
         // operations are then polled concurrently, so speech captured while a
         // network provider connects remains queued instead of being clipped.
@@ -1941,6 +1946,12 @@ impl PipelineHandle {
         let final_text = polish_outcome.final_text;
         let llm_elapsed = polish_outcome.llm_elapsed;
 
+        if stt_control.as_ref().is_some_and(|control| {
+            !should_finalize_stt_task(&self.abort_flag, &self.active_stt_session_id, control.id)
+        }) {
+            return Ok(());
+        }
+
         // ── Phase 3: Timing, history, cleanup ──────────────────────────
         let total_elapsed = stop_start.elapsed();
 
@@ -2050,6 +2061,10 @@ impl PipelineHandle {
     /// Polish raw text with LLM and output the result.
     /// Returns (final_text, llm_elapsed_duration).
     async fn polish_text(&self, input: PolishTextInput<'_>) -> PolishTextOutcome {
+        let generation = self.active_stt_session_id.load(Ordering::SeqCst);
+        let cancelled = self.cancel_notify.notified();
+        tokio::pin!(cancelled);
+        cancelled.as_mut().enable();
         let PolishTextInput {
             raw_text,
             voice_mode,
@@ -2063,6 +2078,8 @@ impl PipelineHandle {
             voice_intent,
             popup_fallback_enabled,
         } = input;
+        let corrected = crate::personalization::correct(raw_text, &correction_rules);
+        let raw_text = corrected.as_ref();
         let provider_plan =
             crate::voice_intent::plan_voice_provider_work(voice_mode, raw_text, &voice_intent);
         let Some(provider_text) = provider_plan.provider_input.as_deref() else {
@@ -2220,7 +2237,16 @@ impl PipelineHandle {
             voice_intent: voice_intent.clone(),
         };
 
-        let polish_result = provider.polish(&llm_config, &req, Some(&on_chunk)).await;
+        let polish_result = tokio::select! {
+            biased;
+            _ = &mut cancelled => return PolishTextOutcome::normal(String::new(), llm_start.elapsed()),
+            result = provider.polish(&llm_config, &req, Some(&on_chunk)) => result,
+        };
+        if self.active_stt_session_id.load(Ordering::SeqCst) != generation
+            || self.abort_flag.load(Ordering::SeqCst)
+        {
+            return PolishTextOutcome::normal(String::new(), llm_start.elapsed());
+        }
         drop(on_chunk);
         let streaming_report = match streaming_worker.take() {
             Some(worker) => worker.finish().await,
@@ -2770,6 +2796,14 @@ impl PipelineHandle {
     ) -> Result<output::InsertResult> {
         self.set_state(PipelineState::Outputting);
 
+        let generation = self.active_stt_session_id.load(Ordering::SeqCst);
+        let editable = output::focused_input::is_editable().await;
+        if self.abort_flag.load(Ordering::SeqCst)
+            || self.active_stt_session_id.load(Ordering::SeqCst) != generation
+        {
+            anyhow::bail!("Output cancelled");
+        }
+
         let target_warning =
             (!self.context_detector.target_still_matches_now(target_guard)).then(|| {
                 crate::error::UserError {
@@ -2781,7 +2815,7 @@ impl PipelineHandle {
                     retry_count: 0,
                 }
             });
-        let requested_strategy = if target_warning.is_some() {
+        let requested_strategy = if target_warning.is_some() || !editable {
             output::InsertionStrategy::ClipboardCopyOnly
         } else {
             output::InsertionStrategy::from_config_value(&config.insertion_strategy)
@@ -2837,7 +2871,10 @@ impl PipelineHandle {
         .await
         {
             Ok(outcome) => outcome,
-            Err(e) => anyhow::bail!("{}", e),
+            Err(e) => {
+                let _ = self.app_handle.emit("pipeline:copy_preview", text);
+                anyhow::bail!("{}", e)
+            }
         };
 
         if let Some(user_error) = target_warning.or(accessibility_warning) {
@@ -2852,6 +2889,9 @@ impl PipelineHandle {
             output_outcome.insert_result.chars_inserted
         );
         let insert_result = output_outcome.insert_result.clone();
+        if insert_result.status != output::InsertStatus::Inserted {
+            let _ = self.app_handle.emit("pipeline:copy_preview", text);
+        }
         let _ = self
             .app_handle
             .emit("pipeline:insert_result", &insert_result);

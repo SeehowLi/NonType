@@ -252,6 +252,8 @@ export interface RecordingDeadlineSnapshot {
 }
 
 interface AppState {
+  copyPreview: string | null
+  setCopyPreview: (text: string | null) => void
   // Pipeline
   pipelineState: PipelineState
   setPipelineState: (state: PipelineState) => void
@@ -452,6 +454,8 @@ function normalizePrimary(value: string): string | null {
     fn: 'Fn',
     function: 'Fn',
     rightalt: 'RightAlt',
+    mouse4: 'Mouse4',
+    mouse5: 'Mouse5',
     right_alt: 'RightAlt',
     'right-alt': 'RightAlt',
     altright: 'RightAlt',
@@ -785,7 +789,7 @@ const defaultConfig: AppConfig = {
   max_recording_seconds: 30,
   history_enabled: true,
   history_retention_days: 0,
-  history_max_entries: 5000,
+  history_max_entries: 0,
   ui_language: 'en',
   capsule_auto_hide: true,
 }
@@ -802,6 +806,8 @@ export const useAppStore = create<AppState>((set) => ({
   setPartialTranscript: (partialTranscript) => set({ partialTranscript }),
   finalTranscript: '',
   setFinalTranscript: (finalTranscript) => set({ finalTranscript }),
+  copyPreview: null,
+  setCopyPreview: (copyPreview) => set({ copyPreview }),
   polishedText: '',
   setPolishedText: (polishedText) => set({ polishedText }),
   appendPolishedChunk: (chunk) => set((s) => ({ polishedText: s.polishedText + chunk })),

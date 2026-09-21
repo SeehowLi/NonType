@@ -52,6 +52,16 @@ afterEach(() => {
 })
 
 describe('Capsule flow states', () => {
+  it('keeps a copy preview visible when the backend returns to idle', () => {
+    useAppStore.setState({
+      copyPreview: '整理好的完整结果',
+      pipelineState: 'idle',
+      pipelineError: null,
+    })
+    render(<Capsule />)
+    expect(screen.getByText('整理好的完整结果')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '复制完整文字' })).toBeInTheDocument()
+  })
   beforeEach(() => {
     useAppStore.setState({
       pipelineState: 'idle',

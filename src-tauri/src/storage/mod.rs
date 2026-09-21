@@ -433,7 +433,7 @@ impl Default for AppConfig {
             managed_stt_capability_state: None,
             history_enabled: true,
             history_retention_days: 0,
-            history_max_entries: DEFAULT_HISTORY_MAX_ENTRIES,
+            history_max_entries: 0,
             ui_language: "en".to_string(),
             capsule_auto_hide: false,
         }
@@ -441,6 +441,27 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn local_install_default() -> Self {
+        Self {
+            stt_provider: crate::stt::volcengine::VOLCENGINE_DOUBAO_PROVIDER.to_string(),
+            stt_volcengine_resource_id: String::new(),
+            polish_enabled: false,
+            auto_start: false,
+            context_adaptation_enabled: false,
+            ask_hotkey: String::new(),
+            hotkey_mode: "hold".to_string(),
+            hotkeys: HotkeyConfig::from_legacy(default_dictation_hotkey(), "", "hold"),
+            voice_routing_flags: crate::voice_intent::VoiceRoutingFlags {
+                draft_insert: false,
+                rewrite_selection: false,
+                translate_selection: false,
+                search: false,
+            },
+            ui_language: "zh".to_string(),
+            ..Self::new_install_default()
+        }
+    }
+
     pub fn new_install_default() -> Self {
         Self {
             capsule_auto_hide: true,
@@ -457,11 +478,6 @@ impl AppConfig {
         if self.hotkey == "Option+/" && self.hotkey_mode == "hold" {
             self.hotkey = "Fn".to_string();
             self.hotkey_mode = "toggle".to_string();
-        }
-        #[cfg(target_os = "windows")]
-        if self.hotkey == "RightAlt" && self.hotkey_mode == "toggle" {
-            self.hotkey = "Ctrl+/".to_string();
-            self.hotkey_mode = "hold".to_string();
         }
         #[cfg(target_os = "macos")]
         if self.ask_hotkey == "Alt+Shift+/"
@@ -508,13 +524,6 @@ impl AppConfig {
     fn migrate_platform_typed_hotkeys(&mut self) {
         #[cfg(target_os = "windows")]
         {
-            if self.hotkeys.dictation.to_hotkey_string().as_deref() == Some("RightAlt") {
-                if let Some(binding) = ShortcutBinding::from_hotkey("Ctrl+/") {
-                    self.hotkeys.dictation = binding.clone();
-                    self.hotkeys.dictation_bindings = vec![binding];
-                }
-                self.hotkeys.dictation_mode = "hold".to_string();
-            }
             if self
                 .hotkeys
                 .ask
@@ -618,9 +627,7 @@ impl AppConfig {
 
     fn normalize_history_settings(&mut self) {
         self.history_retention_days = self.history_retention_days.min(MAX_HISTORY_RETENTION_DAYS);
-        self.history_max_entries = self
-            .history_max_entries
-            .clamp(1, DEFAULT_HISTORY_MAX_ENTRIES);
+        self.history_max_entries = self.history_max_entries.min(DEFAULT_HISTORY_MAX_ENTRIES);
     }
 
     pub fn history_retention_policy(&self) -> HistoryRetentionPolicy {
@@ -839,6 +846,8 @@ fn normalize_hotkey_primary(value: &str) -> Option<String> {
 
     let normalized = match trimmed.to_lowercase().as_str() {
         "space" => "Space".to_string(),
+        "mouse4" => "Mouse4".to_string(),
+        "mouse5" => "Mouse5".to_string(),
         "tab" => "Tab".to_string(),
         "enter" | "return" => "Enter".to_string(),
         "backspace" => "Backspace".to_string(),
@@ -1161,10 +1170,10 @@ impl ConfigManager {
         let mut config = match self.app_handle.store("settings.json") {
             Ok(store) => match store.get("app_config") {
                 Some(val) => AppConfig::from_stored_value(val.clone())
-                    .unwrap_or_else(|_| AppConfig::new_install_default()),
-                None => AppConfig::new_install_default(),
+                    .unwrap_or_else(|_| AppConfig::local_install_default()),
+                None => AppConfig::local_install_default(),
             },
-            Err(_) => AppConfig::new_install_default(),
+            Err(_) => AppConfig::local_install_default(),
         };
 
         self.migrate_legacy_config_secrets_on_load(&mut config);
@@ -1286,7 +1295,7 @@ impl Default for HistoryRetentionPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            max_entries: DEFAULT_HISTORY_MAX_ENTRIES,
+            max_entries: 0,
             retention_days: 0,
         }
     }
@@ -1411,11 +1420,13 @@ impl HistoryStore {
             return Ok(());
         }
 
-        let max_entries = policy.max_entries.clamp(1, DEFAULT_HISTORY_MAX_ENTRIES);
-        conn.execute(
+        if policy.max_entries > 0 {
+            let max_entries = policy.max_entries.min(DEFAULT_HISTORY_MAX_ENTRIES);
+            conn.execute(
             "DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY id DESC LIMIT ?1)",
             rusqlite::params![max_entries],
         )?;
+        }
 
         if policy.retention_days > 0 {
             if let Ok(now) = chrono::NaiveDateTime::parse_from_str(now_iso, "%Y-%m-%dT%H:%M:%S") {
@@ -1494,6 +1505,22 @@ impl HistoryStore {
         Ok(())
     }
 
+    pub async fn delete_ids(&self, ids: &[i64]) -> Result<()> {
+        if ids.len() > 2000 || ids.iter().any(|id| *id <= 0) {
+            anyhow::bail!("Invalid history selection");
+        }
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare("DELETE FROM history WHERE id = ?1")?;
+            for id in ids {
+                stmt.execute(rusqlite::params![id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Restores cloud backup sections in one SQLite transaction. Dictionary and
     /// correction rows live in the same database, so using the history
     /// connection here prevents a partially restored local data set.
@@ -1522,7 +1549,11 @@ impl HistoryStore {
         if let Some(entries) = history {
             transaction.execute("DELETE FROM history", [])?;
             if policy.enabled {
-                let max_entries = policy.max_entries.clamp(1, DEFAULT_HISTORY_MAX_ENTRIES) as usize;
+                let max_entries = if policy.max_entries == 0 {
+                    entries.len()
+                } else {
+                    policy.max_entries.min(DEFAULT_HISTORY_MAX_ENTRIES) as usize
+                };
                 let cutoff = if policy.retention_days > 0 {
                     chrono::NaiveDateTime::parse_from_str(now_iso, "%Y-%m-%dT%H:%M:%S")
                         .ok()
@@ -1930,7 +1961,7 @@ impl DictionaryStore {
 
     pub async fn words(&self) -> Vec<String> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = match conn.prepare("SELECT word FROM dictionary") {
+        let mut stmt = match conn.prepare("SELECT word FROM dictionary ORDER BY id DESC") {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
@@ -2379,7 +2410,7 @@ mod tests {
         let default_config = AppConfig::from_stored_value(default_value).unwrap();
         assert!(default_config.history_enabled);
         assert_eq!(default_config.history_retention_days, 0);
-        assert_eq!(default_config.history_max_entries, 5000);
+        assert_eq!(default_config.history_max_entries, 0);
 
         let invalid_value = serde_json::json!({
             "history_enabled": true,
@@ -3018,6 +3049,19 @@ mod tests {
         assert!(config.auto_start);
     }
 
+    #[test]
+    fn local_install_is_asr_only_without_cloud_or_autostart() {
+        let config = AppConfig::local_install_default();
+        assert_eq!(config.stt_provider, "volcengine-doubao");
+        assert!(!config.polish_enabled);
+        assert!(!config.auto_start);
+        assert!(!config.selected_text_enabled);
+        assert!(!config.voice_routing_flags.search);
+        assert_eq!(config.hotkey_mode, "hold");
+        assert!(config.hotkeys.ask_bindings.is_empty());
+        assert!(config.hotkeys.translate_bindings.is_empty());
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn app_config_new_install_uses_fn_toggle_on_macos() {
@@ -3072,6 +3116,25 @@ mod tests {
                 .and_then(ShortcutBinding::to_hotkey_string),
             Some("Ctrl+Shift+/".to_string())
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn explicit_right_alt_toggle_survives_normalization_and_restart() {
+        let mut config = AppConfig::local_install_default();
+        config.hotkeys = HotkeyConfig::from_legacy("RightAlt", "", "toggle");
+        config.normalize_values();
+        assert_eq!(config.hotkey, "RightAlt");
+        assert_eq!(config.hotkey_mode, "toggle");
+        let reloaded = AppConfig::from_stored_value(serde_json::to_value(config).unwrap()).unwrap();
+        assert_eq!(reloaded.hotkey, "RightAlt");
+        assert_eq!(reloaded.hotkeys.dictation_mode, "toggle");
+        let legacy = AppConfig::from_stored_value(
+            serde_json::json!({"hotkey":"RightAlt","hotkey_mode":"toggle"}),
+        )
+        .unwrap();
+        assert_eq!(legacy.hotkey, "RightAlt");
+        assert_eq!(legacy.hotkey_mode, "toggle");
     }
 
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
@@ -3330,6 +3393,77 @@ mod tests {
         let entries = store.list(10, 0).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].polished_text, "polished 2");
+    }
+
+    #[tokio::test]
+    async fn history_delete_batch_is_precise_and_rejects_invalid_batch_atomically() {
+        let store = HistoryStore::new(":memory:".into()).unwrap();
+        for id in 1..=3 {
+            store
+                .add(test_history_entry(id, "2026-09-21T12:00:00"))
+                .await
+                .unwrap();
+        }
+        assert!(store.delete_ids(&[1, -1]).await.is_err());
+        assert_eq!(store.list(10, 0).await.unwrap().len(), 3);
+        store.delete_ids(&[1, 3, 3, 9999]).await.unwrap();
+        let remaining = store.list(10, 0).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, 2);
+    }
+
+    #[tokio::test]
+    async fn each_retention_option_keeps_boundary_and_permanent_has_no_count_limit() {
+        let now = chrono::NaiveDateTime::parse_from_str("2026-09-21T12:00:00", "%Y-%m-%dT%H:%M:%S")
+            .unwrap();
+        for days in [1, 7, 30, 365] {
+            let store = HistoryStore::new(":memory:".into()).unwrap();
+            let cutoff = now - chrono::Duration::days(days);
+            store
+                .add(test_history_entry(
+                    1,
+                    &(cutoff - chrono::Duration::seconds(1))
+                        .format("%Y-%m-%dT%H:%M:%S")
+                        .to_string(),
+                ))
+                .await
+                .unwrap();
+            store
+                .add(test_history_entry(
+                    2,
+                    &cutoff.format("%Y-%m-%dT%H:%M:%S").to_string(),
+                ))
+                .await
+                .unwrap();
+            store
+                .prune_with_policy(
+                    &HistoryRetentionPolicy {
+                        enabled: true,
+                        max_entries: 0,
+                        retention_days: days as u32,
+                    },
+                    "2026-09-21T12:00:00",
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                store.list(10, 0).await.unwrap()[0].polished_text,
+                "polished 2"
+            );
+            assert_eq!(store.list(10, 0).await.unwrap().len(), 1);
+        }
+        let store = HistoryStore::new(":memory:".into()).unwrap();
+        for id in 1..=5001 {
+            store
+                .add(test_history_entry(id, "2000-01-01T00:00:00"))
+                .await
+                .unwrap();
+        }
+        store
+            .prune_with_policy(&HistoryRetentionPolicy::default(), "2026-09-21T12:00:00")
+            .await
+            .unwrap();
+        assert_eq!(store.list(6000, 0).await.unwrap().len(), 5001);
     }
 
     #[tokio::test]

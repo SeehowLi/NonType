@@ -417,6 +417,8 @@ pub fn native_trigger_supported_on_platform(trigger: NativeHotkeyTrigger, platfo
             NativeHotkeyTrigger::RightAlt
                 | NativeHotkeyTrigger::RightAltSpace
                 | NativeHotkeyTrigger::RightAltLeftShift
+                | NativeHotkeyTrigger::Mouse4
+                | NativeHotkeyTrigger::Mouse5
         ),
         _ => false,
     }
@@ -428,6 +430,8 @@ pub fn native_trigger_from_binding(
     if binding.modifiers.is_empty() {
         return match binding.primary.trim().to_lowercase().as_str() {
             "fn" | "function" => Some(NativeHotkeyTrigger::Fn),
+            "mouse4" => Some(NativeHotkeyTrigger::Mouse4),
+            "mouse5" => Some(NativeHotkeyTrigger::Mouse5),
             "rightalt" | "right_alt" | "right-alt" | "altright" | "alt_right" | "alt-right" => {
                 Some(NativeHotkeyTrigger::RightAlt)
             }
@@ -1241,6 +1245,19 @@ mod tests {
         );
         assert_eq!(plan.global.len(), 1);
         assert_eq!(plan.global[0].role, HotkeyRole::Ask);
+    }
+
+    #[test]
+    fn mouse_side_buttons_roundtrip_to_windows_native_plan() {
+        for key in ["Mouse4", "Mouse5"] {
+            let config = storage::HotkeyConfig::from_legacy(key, "", "toggle");
+            assert_eq!(config.dictation.to_hotkey_string().as_deref(), Some(key));
+            let plan =
+                hotkey_registration_plan_from_config_for_platform(&config, "windows").unwrap();
+            assert_eq!(plan.native.len(), 1);
+            assert_eq!(plan.native[0].trigger.canonical(), key);
+            assert!(hotkey_registration_plan_from_config_for_platform(&config, "macos").is_err());
+        }
     }
 
     #[test]

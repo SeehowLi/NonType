@@ -13,6 +13,10 @@ import type {
 } from '../stores/appStore'
 
 // Pipeline commands
+export async function waitForDesktop(): Promise<void> {
+  return invoke('wait_for_desktop')
+}
+
 export async function startRecording(): Promise<void> {
   return invoke('start_recording')
 }
@@ -492,6 +496,10 @@ export async function getHistory(limit: number, offset: number): Promise<History
 
 export async function clearHistory(): Promise<void> {
   return invoke('clear_history')
+}
+
+export async function deleteHistoryEntries(ids: number[]): Promise<void> {
+  return invoke('delete_history_entries', { ids })
 }
 
 export interface RestoreBackupResult {

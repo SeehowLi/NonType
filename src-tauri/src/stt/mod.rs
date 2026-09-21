@@ -54,6 +54,7 @@ pub enum TranscriptEvent {
 
 #[async_trait]
 pub trait SttProvider: Send + Sync {
+    fn set_hotwords(&mut self, _words: Vec<String>) {}
     async fn connect(&mut self, config: &SttConfig) -> Result<(), AppError>;
     async fn send_audio(&mut self, chunk: &[u8]) -> Result<(), AppError>;
     async fn recv_transcript(&mut self) -> Result<Option<TranscriptEvent>, AppError>;

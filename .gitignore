@@ -13,6 +13,7 @@ node_modules
 # Build output
 dist
 dist-ssr
+.build-tools/
 
 # Environment & secrets
 *.local
@@ -56,3 +57,24 @@ docs/superpowers/
 
 # Local isolated worktrees
 .worktrees/
+
+# Private local audit/setup evidence (kept on the development machine)
+AGENTS.md
+docs/ARCHITECTURE_AUDIT.md
+docs/ASR_SMOKE_REPORT.md
+docs/BASELINE_REPORT.md
+docs/DOUBAO_REFERENCE.md
+docs/IMPLEMENTATION_PLAN.md
+docs/LATENCY_REPORT.md
+docs/MOUSE_HOME_PERSONALIZATION.md
+docs/NETWORK_RULES.md
+docs/PERFORMANCE_SAMPLES.json
+docs/TOGGLE_AND_POLISH.md
+docs/WINDOWS_SETUP.md
+docs/doubao-curl-example.sh
+docs/doubao-image-example.sh
+*.db-*
+*.sqlite-*
+*.pdb
+src-tauri/icons/mvp/android/
+src-tauri/icons/mvp/ios/

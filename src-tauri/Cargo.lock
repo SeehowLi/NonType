@@ -2962,6 +2962,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "nontype"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "async-trait",
+ "base64 0.22.1",
+ "block2 0.5.1",
+ "chrono",
+ "cpal",
+ "csv",
+ "enigo",
+ "flate2",
+ "futures-util",
+ "http",
+ "keyring",
+ "libloading 0.8.9",
+ "objc2 0.5.2",
+ "ogg",
+ "opusic-c",
+ "plist",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-deep-link",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-opener",
+ "tauri-plugin-process",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-store",
+ "tauri-plugin-updater",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-normalization",
+ "url",
+ "uuid",
+ "windows 0.61.3",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3401,53 +3449,6 @@ dependencies = [
  "libc",
  "pkg-config",
  "vcpkg",
-]
-
-[[package]]
-name = "opentypeless"
-version = "0.1.42"
-dependencies = [
- "anyhow",
- "arboard",
- "async-trait",
- "base64 0.22.1",
- "block2 0.5.1",
- "chrono",
- "cpal",
- "csv",
- "enigo",
- "flate2",
- "futures-util",
- "http",
- "keyring",
- "libloading 0.8.9",
- "objc2 0.5.2",
- "ogg",
- "opusic-c",
- "plist",
- "reqwest 0.12.28",
- "rusqlite",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-deep-link",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-opener",
- "tauri-plugin-process",
- "tauri-plugin-single-instance",
- "tauri-plugin-store",
- "tauri-plugin-updater",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "unicode-normalization",
- "url",
- "uuid",
- "windows-sys 0.59.0",
 ]
 
 [[package]]

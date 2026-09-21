@@ -11,7 +11,6 @@ const STANDALONE_KEYS = new Set([
   'Tab',
   'Enter',
   'Backspace',
-  'Escape',
   'Delete',
   'Insert',
   'Home',
@@ -66,6 +65,7 @@ export function HotkeyRecorder({
   const autoConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoStarted = useRef(false)
   const recordingRef = useRef(false)
+  const standaloneCandidate = useRef<string | null>(null)
 
   const clearTimer = useCallback(() => {
     if (!autoConfirmTimer.current) return
@@ -95,6 +95,7 @@ export function HotkeyRecorder({
 
   const cancelRecording = useCallback(() => {
     clearTimer()
+    standaloneCandidate.current = null
     recordingRef.current = false
     setRecording(false)
     setPending(null)
@@ -106,13 +107,15 @@ export function HotkeyRecorder({
 
   const startRecording = useCallback(() => {
     if (disabled) return
+    clearTimer()
+    standaloneCandidate.current = null
     pauseHotkey().catch(() => {})
     recordingRef.current = true
     setRecording(true)
     setPending(null)
     setModifierHint(null)
     setError(null)
-  }, [disabled])
+  }, [clearTimer, disabled])
 
   useEffect(() => {
     return () => {
@@ -132,6 +135,19 @@ export function HotkeyRecorder({
     (event: KeyboardEvent) => {
       event.preventDefault()
       event.stopPropagation()
+
+      if (event.key === 'Escape') {
+        cancelRecording()
+        return
+      }
+
+      if (event.code === 'AltRight' && !event.shiftKey && !event.metaKey) {
+        clearTimer()
+        standaloneCandidate.current = 'RightAlt'
+        setPending('RightAlt')
+        return
+      }
+      standaloneCandidate.current = null
 
       const parts: string[] = []
       if (isMac && event.metaKey) parts.push('Command')
@@ -175,20 +191,49 @@ export function HotkeyRecorder({
       if (autoConfirmTimer.current) clearTimeout(autoConfirmTimer.current)
       autoConfirmTimer.current = setTimeout(() => confirmHotkey(combo), 1500)
     },
-    [confirmHotkey, isMac],
+    [cancelRecording, clearTimer, confirmHotkey, isMac],
   )
 
   useEffect(() => {
     if (!recording) return
-    const clearModifierHint = () => setModifierHint(null)
+    const clearModifierHint = (event: KeyboardEvent) => {
+      setModifierHint(null)
+      if (event.code === 'AltRight' && standaloneCandidate.current === 'RightAlt') {
+        standaloneCandidate.current = null
+        confirmHotkey('RightAlt')
+      }
+    }
     window.addEventListener('keydown', handleKeyDown, true)
     window.addEventListener('keyup', clearModifierHint, true)
+    const mouseButton = (event: MouseEvent) => {
+      if (event.button !== 3 && event.button !== 4) return
+      event.preventDefault()
+      event.stopPropagation()
+      clearTimer()
+      if (event.type === 'mousedown') {
+        standaloneCandidate.current = event.button === 3 ? 'Mouse4' : 'Mouse5'
+        setPending(standaloneCandidate.current)
+      } else if (
+        event.type === 'mouseup' &&
+        standaloneCandidate.current === (event.button === 3 ? 'Mouse4' : 'Mouse5')
+      ) {
+        const key = standaloneCandidate.current
+        standaloneCandidate.current = null
+        confirmHotkey(key)
+      }
+    }
+    window.addEventListener('mousedown', mouseButton, true)
+    window.addEventListener('mouseup', mouseButton, true)
+    window.addEventListener('auxclick', mouseButton, true)
     return () => {
+      window.removeEventListener('mousedown', mouseButton, true)
+      window.removeEventListener('mouseup', mouseButton, true)
+      window.removeEventListener('auxclick', mouseButton, true)
       window.removeEventListener('keydown', handleKeyDown, true)
       window.removeEventListener('keyup', clearModifierHint, true)
       clearTimer()
     }
-  }, [clearTimer, handleKeyDown, recording])
+  }, [clearTimer, confirmHotkey, handleKeyDown, recording])
 
   const handleClick = () => {
     if (disabled) return

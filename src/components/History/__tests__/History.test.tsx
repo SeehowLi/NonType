@@ -2,7 +2,13 @@ import React from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore, type HistoryEntry } from '../../../stores/appStore'
-import { addCorrectionRule, clearHistory, getCorrectionRules } from '../../../lib/tauri'
+import {
+  addCorrectionRule,
+  clearHistory,
+  getCorrectionRules,
+  deleteHistoryEntries,
+  getHistory,
+} from '../../../lib/tauri'
 import { History } from '../index'
 
 vi.mock('framer-motion', () => ({
@@ -26,6 +32,8 @@ vi.mock('../../../lib/tauri', () => ({
   addCorrectionRule: vi.fn().mockResolvedValue(undefined),
   clearHistory: vi.fn().mockResolvedValue(undefined),
   getCorrectionRules: vi.fn().mockResolvedValue([]),
+  deleteHistoryEntries: vi.fn().mockResolvedValue(undefined),
+  getHistory: vi.fn().mockResolvedValue([]),
 }))
 
 const entry: HistoryEntry = {
@@ -51,6 +59,25 @@ const entry: HistoryEntry = {
 }
 
 describe('History correction creation', () => {
+  it('deletes only selected IDs after confirmation', async () => {
+    useAppStore.setState({ history: [entry, { ...entry, id: 2, polished_text: 'second' }] })
+    vi.mocked(getHistory).mockResolvedValue([{ ...entry, id: 2, polished_text: 'second' }])
+    render(<History />)
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择记录 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '删除所选（1）' }))
+    expect(deleteHistoryEntries).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
+    await waitFor(() => expect(deleteHistoryEntries).toHaveBeenCalledWith([1]))
+    await waitFor(() => expect(useAppStore.getState().history.map((e) => e.id)).toEqual([2]))
+  })
+
+  it('single-entry delete can be cancelled without changing history', () => {
+    render(<History />)
+    fireEvent.click(screen.getByRole('button', { name: '删除记录 1' }))
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(deleteHistoryEntries).not.toHaveBeenCalled()
+    expect(useAppStore.getState().history).toHaveLength(1)
+  })
   beforeEach(() => {
     useAppStore.setState({ history: [entry], correctionRules: [] })
     vi.clearAllMocks()

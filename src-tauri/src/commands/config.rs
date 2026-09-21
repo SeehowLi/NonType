@@ -65,6 +65,10 @@ fn emit_config_patch(app: &tauri::AppHandle, patch: &Value) {
 }
 
 fn prepare_config_for_save(mut config: storage::AppConfig) -> Result<storage::AppConfig, String> {
+    if config.stt_provider == crate::stt::volcengine::VOLCENGINE_DOUBAO_PROVIDER {
+        crate::stt::volcengine::validate_resource_id(&config.stt_volcengine_resource_id)
+            .map_err(|error| error.to_string())?;
+    }
     sync_hotkey_fields_before_save(&mut config);
     crate::hotkey::validate_hotkey_config(&config.hotkeys).map_err(|e| e.to_string())?;
     config.normalize_values();
@@ -286,6 +290,18 @@ pub async fn update_config(
     }
 
     update_runtime_caches(&cache, &ask_cache, &role_cache, &close_tray_cache, &config);
+    if previous.history_retention_policy() != config.history_retention_policy() {
+        if let Some(history) = app.try_state::<storage::HistoryStore>() {
+            history
+                .prune_with_policy(
+                    &config.history_retention_policy(),
+                    &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            let _ = app.emit("history:changed", ());
+        }
+    }
     emit_config_patch(&app, &patch);
     if patch.get("ui_language").is_some() || patch.get("capsule_auto_hide").is_some() {
         crate::refresh_tray(&app);

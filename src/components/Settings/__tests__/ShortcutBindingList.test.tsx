@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ShortcutBindingList } from '../ShortcutBindingList'
+import { HotkeyRecorder, ShortcutBindingList } from '../ShortcutBindingList'
 import * as tauri from '../../../lib/tauri'
 
 vi.mock('../../../lib/tauri', () => ({
@@ -33,6 +33,45 @@ const f9 = { primary: 'F9', modifiers: [] }
 describe('ShortcutBindingList', () => {
   beforeEach(() => vi.clearAllMocks())
   afterEach(cleanup)
+
+  it('records physical right Alt as a standalone key on release', () => {
+    const saved = vi.fn()
+    render(<HotkeyRecorder value="Ctrl+/" onSaved={saved} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Ctrl+/' }))
+    fireEvent.keyDown(window, { key: 'Alt', code: 'AltRight', location: 2, altKey: true })
+    expect(saved).not.toHaveBeenCalled()
+    fireEvent.keyUp(window, { key: 'Alt', code: 'AltRight', location: 2 })
+    expect(saved).toHaveBeenCalledWith('RightAlt')
+    expect(tauri.pauseHotkey).toHaveBeenCalled()
+    expect(tauri.resumeHotkey).toHaveBeenCalled()
+  })
+
+  it.each([[3, 'Mouse4'], [4, 'Mouse5']] as const)('records mouse side button %s on release', (button, key) => {
+    const saved = vi.fn()
+    render(<HotkeyRecorder value="RightAlt" onSaved={saved} />)
+    fireEvent.click(screen.getByRole('button', { name: 'RightAlt' }))
+    fireEvent.mouseDown(window, { button })
+    expect(saved).not.toHaveBeenCalled()
+    fireEvent.mouseUp(window, { button })
+    expect(saved).toHaveBeenCalledExactlyOnceWith(key)
+  })
+
+  it('Escape cancels capture and clears a pending auto-save without replacing the binding', () => {
+    vi.useFakeTimers()
+    try {
+      const saved = vi.fn()
+      render(<HotkeyRecorder value="RightAlt" onSaved={saved} />)
+      fireEvent.click(screen.getByRole('button', { name: 'RightAlt' }))
+      fireEvent.keyDown(window, { key: 'F8', code: 'F8' })
+      fireEvent.keyDown(window, { key: 'Escape', code: 'Escape' })
+      vi.advanceTimersByTime(2000)
+      expect(saved).not.toHaveBeenCalled()
+      expect(screen.getByRole('button', { name: 'RightAlt' })).toBeInTheDocument()
+      expect(tauri.resumeHotkey).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 
   it('keeps a single required binding visually quiet', () => {
     render(

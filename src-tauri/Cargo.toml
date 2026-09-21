@@ -1,6 +1,6 @@
 [package]
-name = "opentypeless"
-version = "0.1.42"
+name = "nontype"
+version = "0.1.0"
 description = "AI-powered speech-to-text and text polishing desktop app"
 authors = ["OpenTypeless Contributors"]
 license = "MIT"
@@ -54,6 +54,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61.3", features = ["Win32_System_Com", "Win32_System_Variant", "Win32_System_Ole", "Win32_UI_Accessibility"] }
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",

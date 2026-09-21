@@ -32,11 +32,24 @@ const NO_SERIALIZATION: u8 = 0x0;
 const GZIP_COMPRESSION: u8 = 0x1;
 const INITIAL_RESPONSE_TIMEOUT_SECS: u64 = 5;
 
+pub fn validate_resource_id(value: &str) -> Result<(), AppError> {
+    match value.trim() {
+        "volc.seedasr.sauc.duration"
+        | "volc.bigasr.sauc.duration"
+        | "volc.seedasr.sauc.concurrent"
+        | "volc.bigasr.sauc.concurrent" => Ok(()),
+        _ => Err(AppError::Config(
+            "请选择已开通的流式 ASR 服务类型，Resource ID 不是实例 ID".to_string(),
+        )),
+    }
+}
+
 pub struct VolcengineDoubaoProvider {
     ws: Option<WsStream>,
     sequence: i32,
     sent_audio: bool,
     url: String,
+    hotwords: Vec<String>,
 }
 
 impl Default for VolcengineDoubaoProvider {
@@ -52,6 +65,7 @@ impl VolcengineDoubaoProvider {
             sequence: 1,
             sent_audio: false,
             url: VOLCENGINE_ASR_URL.to_string(),
+            hotwords: Vec::new(),
         }
     }
 
@@ -131,8 +145,12 @@ fn build_frame(
     Ok(frame)
 }
 
-fn build_full_client_request_frame(config: &SttConfig, sequence: i32) -> Result<Vec<u8>, AppError> {
-    let payload = serde_json::json!({
+fn build_full_client_request_frame(
+    config: &SttConfig,
+    sequence: i32,
+    hotwords: &[String],
+) -> Result<Vec<u8>, AppError> {
+    let mut payload = serde_json::json!({
         "user": {
             "uid": "opentypeless"
         },
@@ -148,10 +166,14 @@ fn build_full_client_request_frame(config: &SttConfig, sequence: i32) -> Result<
             "model_name": "bigmodel",
             "enable_itn": config.smart_format,
             "enable_ddc": false,
+            "enable_nonstream": false,
             "enable_punc": config.smart_format,
             "show_utterances": true
         }
     });
+    if !hotwords.is_empty() {
+        payload["request"]["corpus"] = serde_json::json!({"context": serde_json::json!({"hotwords": hotwords.iter().map(|word| serde_json::json!({"word":word})).collect::<Vec<_>>()}).to_string()});
+    }
     build_frame(
         FULL_CLIENT_REQUEST,
         POS_SEQUENCE,
@@ -387,7 +409,11 @@ fn map_connect_error(error: WsError) -> AppError {
 
 #[async_trait]
 impl SttProvider for VolcengineDoubaoProvider {
+    fn set_hotwords(&mut self, words: Vec<String>) {
+        self.hotwords = crate::personalization::hotwords(&words);
+    }
     async fn connect(&mut self, config: &SttConfig) -> Result<(), AppError> {
+        validate_resource_id(resolve_resource_id(config))?;
         if config.api_key.trim().is_empty() {
             return Err(AppError::Auth(
                 "Volcengine Doubao ASR API key is empty".to_string(),
@@ -407,6 +433,7 @@ impl SttProvider for VolcengineDoubaoProvider {
                     tokio_tungstenite::tungstenite::handshake::client::generate_key(),
                 )
                 .header("X-Api-Resource-Id", resolve_resource_id(config))
+                .header("X-Api-Request-Id", uuid::Uuid::new_v4().to_string())
                 .header("X-Api-Connect-Id", connect_id());
 
             if let Some((app_key, access_key)) = config.api_key.split_once(':') {
@@ -417,15 +444,21 @@ impl SttProvider for VolcengineDoubaoProvider {
                 builder = builder.header("X-Api-Key", config.api_key.trim());
             }
 
-            let request = builder
+            let mut request = builder
                 .body(())
                 .map_err(|e| AppError::Config(e.to_string()))?;
+            for name in ["X-Api-Key", "X-Api-App-Key", "X-Api-Access-Key"] {
+                if let Some(value) = request.headers_mut().get_mut(name) {
+                    value.set_sensitive(true);
+                }
+            }
 
             match connect_async(request).await {
                 Ok((mut ws, _)) => {
                     self.sequence = 1;
                     self.sent_audio = false;
-                    let frame = build_full_client_request_frame(config, self.sequence)?;
+                    let frame =
+                        build_full_client_request_frame(config, self.sequence, &self.hotwords)?;
                     ws.send(Message::Binary(frame))
                         .await
                         .map_err(|e| AppError::Network(e.to_string()))?;
@@ -570,6 +603,13 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn rejects_instance_ids_before_network_requests() {
+        assert!(validate_resource_id("Speech_Recognition_Seed_streaming1234").is_err());
+        assert!(validate_resource_id("volc.seedasr.sauc.duration").is_ok());
+        assert!(validate_resource_id("volc.bigasr.sauc.concurrent").is_ok());
+    }
+
     fn test_config(language: Option<&str>) -> SttConfig {
         SttConfig {
             api_key: "test-key".to_string(),
@@ -593,8 +633,22 @@ mod tests {
     }
 
     #[test]
+    fn hotwords_use_serialized_context_without_changing_audio_format() {
+        let frame =
+            build_full_client_request_frame(&test_config(Some("zh")), 1, &["OpenFHE".into()])
+                .unwrap();
+        let payload = ungzip_payload(&frame[12..]).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        let context: serde_json::Value =
+            serde_json::from_str(value["request"]["corpus"]["context"].as_str().unwrap()).unwrap();
+        assert_eq!(context["hotwords"][0]["word"], "OpenFHE");
+        assert_eq!(value["audio"]["format"], "pcm");
+        assert_eq!(value["request"]["enable_nonstream"], false);
+    }
+
+    #[test]
     fn builds_full_client_request_with_sequence_and_gzipped_json_payload() {
-        let frame = build_full_client_request_frame(&test_config(Some("zh")), 1).unwrap();
+        let frame = build_full_client_request_frame(&test_config(Some("zh")), 1, &[]).unwrap();
 
         assert_eq!(frame[0], 0x11);
         assert_eq!(frame[1], 0x11);
@@ -613,6 +667,7 @@ mod tests {
         assert_eq!(value["audio"]["language"], "zh-CN");
         assert_eq!(value["request"]["model_name"], "bigmodel");
         assert_eq!(value["request"]["enable_itn"], true);
+        assert_eq!(value["request"]["enable_nonstream"], false);
         assert_eq!(value["request"]["enable_punc"], true);
         assert_eq!(value["request"]["show_utterances"], true);
     }

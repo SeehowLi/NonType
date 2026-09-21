@@ -11,6 +11,8 @@ pub enum NativeHotkeyTrigger {
     RightAlt,
     RightAltSpace,
     RightAltLeftShift,
+    Mouse4,
+    Mouse5,
 }
 
 impl NativeHotkeyTrigger {
@@ -22,6 +24,8 @@ impl NativeHotkeyTrigger {
             Self::RightAlt => "RightAlt",
             Self::RightAltSpace => "RightAlt+Space",
             Self::RightAltLeftShift => "RightAlt+LeftShift",
+            Self::Mouse4 => "Mouse4",
+            Self::Mouse5 => "Mouse5",
         }
     }
 
@@ -30,6 +34,8 @@ impl NativeHotkeyTrigger {
         match self {
             Self::Fn | Self::FnSpace | Self::FnLeftShift => Self::Fn,
             Self::RightAlt | Self::RightAltSpace | Self::RightAltLeftShift => Self::RightAlt,
+            Self::Mouse4 => Self::Mouse4,
+            Self::Mouse5 => Self::Mouse5,
         }
     }
 
@@ -38,7 +44,7 @@ impl NativeHotkeyTrigger {
         match self {
             Self::FnSpace | Self::RightAltSpace => Some(NativeComboKey::Space),
             Self::FnLeftShift | Self::RightAltLeftShift => Some(NativeComboKey::LeftShift),
-            Self::Fn | Self::RightAlt => None,
+            Self::Fn | Self::RightAlt | Self::Mouse4 | Self::Mouse5 => None,
         }
     }
 
@@ -143,7 +149,7 @@ impl NativeMonitoredBinding {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(target_os = "macos")]
 fn monitored_bindings_for_base(
     bindings: Vec<NativeHotkeyBinding>,
     base: NativeHotkeyTrigger,
@@ -626,7 +632,7 @@ mod platform {
 #[cfg(target_os = "windows")]
 mod platform {
     use super::{
-        dispatch_native_base_edge, dispatch_native_combo_edge, monitored_bindings_for_base,
+        dispatch_matching_bindings, dispatch_native_base_edge, dispatch_native_combo_edge,
         NativeComboKey, NativeComboState, NativeHotkeyHandler, NativeHotkeyTrigger,
         NativeMonitoredBinding,
     };
@@ -641,7 +647,8 @@ mod platform {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
         SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HC_ACTION, HHOOK,
-        KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, PM_NOREMOVE, WH_KEYBOARD_LL, WM_QUIT,
+        KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE, WH_KEYBOARD_LL,
+        WH_MOUSE_LL, WM_QUIT, WM_XBUTTONDOWN, WM_XBUTTONUP,
     };
 
     const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
@@ -699,9 +706,20 @@ mod platform {
             bindings: Vec<super::NativeHotkeyBinding>,
             handler: NativeHotkeyHandler,
         ) -> Result<Self, String> {
-            let bindings = monitored_bindings_for_base(bindings, NativeHotkeyTrigger::RightAlt);
+            let bindings = bindings
+                .into_iter()
+                .filter(|binding| {
+                    matches!(
+                        binding.trigger.base(),
+                        NativeHotkeyTrigger::RightAlt
+                            | NativeHotkeyTrigger::Mouse4
+                            | NativeHotkeyTrigger::Mouse5
+                    )
+                })
+                .map(NativeMonitoredBinding::new)
+                .collect::<Vec<_>>();
             if bindings.is_empty() {
-                return Err("Windows native hotkeys currently support RightAlt only".to_string());
+                return Err("No supported Windows native hotkeys".to_string());
             }
 
             let (status_tx, status_rx) = mpsc::channel();
@@ -762,6 +780,7 @@ mod platform {
         bindings: Vec<NativeMonitoredBinding>,
         handler: NativeHotkeyHandler,
         hook: std::sync::Mutex<Option<HHOOK>>,
+        mouse_hook: std::sync::Mutex<Option<HHOOK>>,
         state: std::sync::Mutex<NativeComboState>,
     }
 
@@ -792,6 +811,7 @@ mod platform {
                 bindings,
                 handler,
                 hook: std::sync::Mutex::new(None),
+                mouse_hook: std::sync::Mutex::new(None),
                 state: std::sync::Mutex::new(NativeComboState::default()),
             }));
             HOOK_CONTEXT.store(context, AtomicOrdering::SeqCst);
@@ -829,6 +849,25 @@ mod platform {
                 return;
             }
             *(*context).hook.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+            if (*context).bindings.iter().any(|binding| {
+                matches!(
+                    binding.binding.trigger,
+                    NativeHotkeyTrigger::Mouse4 | NativeHotkeyTrigger::Mouse5
+                )
+            }) {
+                let mouse_hook =
+                    SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_proc), module, 0);
+                if mouse_hook.is_null() {
+                    let error = GetLastError();
+                    cleanup_context(context);
+                    let _ = status_tx.send(Err(format!("Mouse side-button hook failed: {error}")));
+                    return;
+                }
+                *(*context)
+                    .mouse_hook
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(mouse_hook);
+            }
 
             if startup.is_cancelled() {
                 cleanup_context(context);
@@ -858,6 +897,14 @@ mod platform {
 
     unsafe fn cleanup_context(context: *mut CallbackContext) {
         if let Some(hook) = (*context)
+            .mouse_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            UnhookWindowsHookEx(hook);
+        }
+        if let Some(hook) = (*context)
             .hook
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -877,6 +924,37 @@ mod platform {
             AtomicOrdering::SeqCst,
         );
         drop(Box::from_raw(context));
+    }
+
+    unsafe extern "system" fn low_level_mouse_proc(
+        code: i32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        if code == HC_ACTION as i32
+            && lparam != 0
+            && matches!(wparam as u32, WM_XBUTTONDOWN | WM_XBUTTONUP)
+        {
+            let mouse = &*(lparam as *const MSLLHOOKSTRUCT);
+            if mouse.flags & 1 == 0 || accept_synthetic_events() {
+                let trigger = match mouse.mouseData >> 16 {
+                    1 => Some(NativeHotkeyTrigger::Mouse4),
+                    2 => Some(NativeHotkeyTrigger::Mouse5),
+                    _ => None,
+                };
+                if let (Some(context), Some(trigger)) = (callback_context(), trigger) {
+                    if dispatch_matching_bindings(
+                        &context.bindings,
+                        trigger,
+                        wparam as u32 == WM_XBUTTONDOWN,
+                        &context.handler,
+                    ) {
+                        return 1;
+                    }
+                }
+            }
+        }
+        CallNextHookEx(ptr::null_mut(), code, wparam, lparam)
     }
 
     unsafe extern "system" fn low_level_keyboard_proc(
@@ -971,6 +1049,42 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mouse_bindings_suppress_only_bound_buttons_and_dedupe_edges() {
+        let bindings = vec![NativeMonitoredBinding::new(NativeHotkeyBinding {
+            role: crate::hotkey::HotkeyRole::Dictation,
+            index: 0,
+            trigger: NativeHotkeyTrigger::Mouse4,
+        })];
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let handler: NativeHotkeyHandler =
+            Arc::new(move |event| captured.lock().unwrap().push(event.state));
+        assert!(!dispatch_matching_bindings(
+            &bindings,
+            NativeHotkeyTrigger::Mouse5,
+            true,
+            &handler
+        ));
+        for pressed in [true, true, false, false, true, false] {
+            assert!(dispatch_matching_bindings(
+                &bindings,
+                NativeHotkeyTrigger::Mouse4,
+                pressed,
+                &handler
+            ));
+        }
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                ShortcutState::Pressed,
+                ShortcutState::Released,
+                ShortcutState::Pressed,
+                ShortcutState::Released
+            ]
+        );
+    }
 
     #[test]
     fn held_state_dedupes_repeat_edges() {
