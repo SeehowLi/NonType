@@ -46,6 +46,17 @@ if (-not (Get-Command rc.exe -ErrorAction SilentlyContinue)) { throw 'Windows SD
 $vsCmake = Join-Path $vsPath 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
 if (Test-Path -LiteralPath $vsCmake) { $env:CMAKE = $vsCmake }
 
+if ($Release) {
+    # Strip machine-specific source paths from Rust and native C/C++ diagnostics.
+    $pathMaps = @("--remap-path-prefix=$projectRoot=/nontype", "--remap-path-prefix=$env:USERPROFILE=/user")
+    $rustFlags = @($env:CARGO_ENCODED_RUSTFLAGS -split [char]31 | Where-Object { $_ })
+    foreach ($mapping in $pathMaps) { if ($rustFlags -notcontains $mapping) { $rustFlags += $mapping } }
+    $env:CARGO_ENCODED_RUSTFLAGS = $rustFlags -join [char]31
+    $nativeMaps = "/experimental:deterministic `"/pathmap:$projectRoot=/nontype`" `"/pathmap:$env:USERPROFILE=/user`""
+    $env:CFLAGS = "$env:CFLAGS $nativeMaps".Trim()
+    $env:CXXFLAGS = "$env:CXXFLAGS $nativeMaps".Trim()
+}
+
 function Invoke-Checked {
     param([string]$Program, [string[]]$Arguments)
     & $Program @Arguments
